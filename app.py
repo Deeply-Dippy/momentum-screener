@@ -46,5 +46,8 @@ for ticker, meta in tickers.items():
     except:
         continue
 
-df_result = pd.DataFrame(results).sort_values(by=f"% Change ({timeframe})", ascending=False)
-st.dataframe(df_result)
+if results:
+    df_result = pd.DataFrame(results).sort_values(by=f"% Change ({timeframe})", ascending=False)
+    st.dataframe(df_result)
+else:
+    st.warning("No stocks matched your filters or data failed to load. Try changing filters or check internet/data sources.")
