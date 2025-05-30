@@ -31,10 +31,15 @@ for ticker, meta in tickers.items():
         continue
     try:
         df = yf.download(ticker, start=start_date, end=today, progress=False)
-        if df.empty:
+        if df.empty or len(df) < 2:  # Need at least 2 data points
             continue
         start_price = df['Close'].iloc[0]
         end_price = df['Close'].iloc[-1]
+        
+        # Check for valid prices
+        if pd.isna(start_price) or pd.isna(end_price) or start_price <= 0:
+            continue
+            
         pct = round(((end_price - start_price) / start_price) * 100, 2)
         results.append({
             "Ticker": ticker,
@@ -43,11 +48,26 @@ for ticker, meta in tickers.items():
             "Sector": meta["sector"],
             f"% Change ({timeframe})": pct
         })
-    except:
+    except Exception as e:
+        st.warning(f"Could not fetch data for {ticker}: {str(e)}")
         continue
 
+# Check if we have results before creating DataFrame
 if results:
-    df_result = pd.DataFrame(results).sort_values(by=f"% Change ({timeframe})", ascending=False)
-    st.dataframe(df_result)
+    df_result = pd.DataFrame(results)
+    
+    # Ensure the percentage column is numeric
+    pct_column = f"% Change ({timeframe})"
+    df_result[pct_column] = pd.to_numeric(df_result[pct_column], errors='coerce')
+    
+    # Remove any rows with NaN percentage values
+    df_result = df_result.dropna(subset=[pct_column])
+    
+    if not df_result.empty:
+        # Sort by percentage change
+        df_result = df_result.sort_values(by=pct_column, ascending=False)
+        st.dataframe(df_result)
+    else:
+        st.warning("No valid data available for the selected filters and timeframe.")
 else:
-    st.warning("No stocks matched your filters or data failed to load. Try changing filters or check internet/data sources.")
+    st.warning("No data available for the selected filters and timeframe. Please adjust your selection or try again later.")
