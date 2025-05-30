@@ -24,50 +24,91 @@ start_date = today - timedelta(days=7 if timeframe == "1 Week" else 30)
 st.write(f"Showing data from **{start_date.date()}** to **{today.date()}**")
 
 results = []
+errors = []
+
 for ticker, meta in tickers.items():
     if meta["region"] not in region_filter:
         continue
     if sector_filter and meta["sector"] not in sector_filter:
         continue
+    
     try:
+        # Download data with error handling
         df = yf.download(ticker, start=start_date, end=today, progress=False)
-        if df.empty or len(df) < 2:  # Need at least 2 data points
+        
+        if df.empty:
+            errors.append(f"{ticker}: No data available")
             continue
+            
+        if len(df) < 2:
+            errors.append(f"{ticker}: Insufficient data points")
+            continue
+        
+        # Get first and last valid prices
         start_price = df['Close'].iloc[0]
         end_price = df['Close'].iloc[-1]
         
-        # Check for valid prices
-        if pd.isna(start_price) or pd.isna(end_price) or start_price <= 0:
+        # Validate prices
+        if pd.isna(start_price) or pd.isna(end_price):
+            errors.append(f"{ticker}: Invalid price data")
             continue
             
-        pct = round(((end_price - start_price) / start_price) * 100, 2)
+        if start_price <= 0:
+            errors.append(f"{ticker}: Invalid start price")
+            continue
+        
+        # Calculate percentage change
+        pct_change = ((end_price - start_price) / start_price) * 100
+        
+        # Round to 2 decimal places
+        pct_change = round(float(pct_change), 2)
+        
         results.append({
             "Ticker": ticker,
             "Name": meta["name"],
             "Region": meta["region"],
             "Sector": meta["sector"],
-            f"% Change ({timeframe})": pct
+            "Percent_Change": pct_change  # Using fixed column name
         })
+        
     except Exception as e:
-        st.warning(f"Could not fetch data for {ticker}: {str(e)}")
+        errors.append(f"{ticker}: {str(e)}")
         continue
 
-# Check if we have results before creating DataFrame
+# Display results
 if results:
+    # Create DataFrame
     df_result = pd.DataFrame(results)
     
-    # Ensure the percentage column is numeric
-    pct_column = f"% Change ({timeframe})"
-    df_result[pct_column] = pd.to_numeric(df_result[pct_column], errors='coerce')
+    # Ensure numeric column
+    df_result["Percent_Change"] = pd.to_numeric(df_result["Percent_Change"], errors='coerce')
     
-    # Remove any rows with NaN percentage values
-    df_result = df_result.dropna(subset=[pct_column])
+    # Remove any NaN values
+    df_result = df_result.dropna(subset=["Percent_Change"])
     
     if not df_result.empty:
-        # Sort by percentage change
-        df_result = df_result.sort_values(by=pct_column, ascending=False)
-        st.dataframe(df_result)
+        # Sort by percentage change (descending)
+        df_result = df_result.sort_values("Percent_Change", ascending=False)
+        
+        # Rename column for display
+        df_result = df_result.rename(columns={"Percent_Change": f"% Change ({timeframe})"})
+        
+        # Reset index for clean display
+        df_result = df_result.reset_index(drop=True)
+        
+        st.dataframe(df_result, use_container_width=True)
+        
+        # Show top performer
+        if len(df_result) > 0:
+            top_performer = df_result.iloc[0]
+            st.success(f"🏆 Top Performer: **{top_performer['Name']} ({top_performer['Ticker']})** with {top_performer[f'% Change ({timeframe})']}%")
     else:
-        st.warning("No valid data available for the selected filters and timeframe.")
+        st.warning("No valid data available after filtering.")
 else:
-    st.warning("No data available for the selected filters and timeframe. Please adjust your selection or try again later.")
+    st.warning("No data available for the selected criteria.")
+
+# Show errors if any (in expander to not clutter the main view)
+if errors:
+    with st.expander("⚠️ Data Fetch Issues", expanded=False):
+        for error in errors:
+            st.text(error)
