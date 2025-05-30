@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
+import numpy as np
 
 # Define tickers (expandable)
 tickers = {
@@ -33,9 +34,11 @@ for ticker, meta in tickers.items():
         continue
     
     try:
-        # Download data with error handling
-        df = yf.download(ticker, start=start_date, end=today, progress=False)
+        # Download data for single ticker
+        stock = yf.Ticker(ticker)
+        df = stock.history(start=start_date, end=today)
         
+        # Check if data exists
         if df.empty:
             errors.append(f"{ticker}: No data available")
             continue
@@ -44,70 +47,121 @@ for ticker, meta in tickers.items():
             errors.append(f"{ticker}: Insufficient data points")
             continue
         
-        # Get first and last valid prices
-        start_price = df['Close'].iloc[0]
-        end_price = df['Close'].iloc[-1]
+        # Get close prices - handle both single and multi-index columns
+        if 'Close' in df.columns:
+            close_prices = df['Close']
+        elif ('Close', ticker) in df.columns:
+            close_prices = df[('Close', ticker)]
+        else:
+            # Try to find any close column
+            close_cols = [col for col in df.columns if 'Close' in str(col)]
+            if close_cols:
+                close_prices = df[close_cols[0]]
+            else:
+                errors.append(f"{ticker}: No Close price column found")
+                continue
+        
+        # Remove any NaN values and get first and last prices
+        close_prices = close_prices.dropna()
+        
+        if len(close_prices) < 2:
+            errors.append(f"{ticker}: Insufficient valid price data")
+            continue
+        
+        start_price = float(close_prices.iloc[0])
+        end_price = float(close_prices.iloc[-1])
         
         # Validate prices
-        if pd.isna(start_price) or pd.isna(end_price):
-            errors.append(f"{ticker}: Invalid price data")
-            continue
-            
-        if start_price <= 0:
-            errors.append(f"{ticker}: Invalid start price")
+        if start_price <= 0 or end_price <= 0:
+            errors.append(f"{ticker}: Invalid price values")
             continue
         
         # Calculate percentage change
         pct_change = ((end_price - start_price) / start_price) * 100
-        
-        # Round to 2 decimal places
-        pct_change = round(float(pct_change), 2)
+        pct_change = round(pct_change, 2)
         
         results.append({
             "Ticker": ticker,
             "Name": meta["name"],
             "Region": meta["region"],
             "Sector": meta["sector"],
-            "Percent_Change": pct_change  # Using fixed column name
+            "Start_Price": round(start_price, 2),
+            "End_Price": round(end_price, 2),
+            "Percent_Change": pct_change
         })
         
     except Exception as e:
-        errors.append(f"{ticker}: {str(e)}")
+        errors.append(f"{ticker}: Error - {str(e)}")
         continue
 
 # Display results
 if results:
-    # Create DataFrame
-    df_result = pd.DataFrame(results)
+    try:
+        # Create DataFrame
+        df_result = pd.DataFrame(results)
+        
+        # Ensure all numeric columns are properly typed
+        numeric_cols = ["Start_Price", "End_Price", "Percent_Change"]
+        for col in numeric_cols:
+            df_result[col] = pd.to_numeric(df_result[col], errors='coerce')
+        
+        # Remove any rows with NaN values in critical columns
+        df_result = df_result.dropna(subset=["Percent_Change"])
+        
+        if not df_result.empty:
+            # Sort by percentage change (descending) - use explicit method
+            df_result = df_result.sort_values(by="Percent_Change", ascending=False, na_position='last')
+            
+            # Create display DataFrame with renamed columns
+            display_df = df_result.copy()
+            display_df = display_df.rename(columns={
+                "Start_Price": f"Start Price",
+                "End_Price": f"End Price", 
+                "Percent_Change": f"% Change ({timeframe})"
+            })
+            
+            # Reset index for clean display
+            display_df = display_df.reset_index(drop=True)
+            
+            st.dataframe(display_df, use_container_width=True)
+            
+            # Show summary stats
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                top_performer = df_result.iloc[0]
+                st.metric(
+                    label="🏆 Top Performer",
+                    value=f"{top_performer['Name']} ({top_performer['Ticker']})",
+                    delta=f"{top_performer['Percent_Change']}%"
+                )
+            
+            with col2:
+                avg_change = df_result['Percent_Change'].mean()
+                st.metric(
+                    label="📊 Average Change",
+                    value=f"{avg_change:.2f}%"
+                )
+            
+            with col3:
+                total_stocks = len(df_result)
+                positive_stocks = len(df_result[df_result['Percent_Change'] > 0])
+                st.metric(
+                    label="📈 Positive Performers",
+                    value=f"{positive_stocks}/{total_stocks}",
+                    delta=f"{(positive_stocks/total_stocks*100):.1f}% positive"
+                )
+        else:
+            st.warning("No valid data available after processing.")
     
-    # Ensure numeric column
-    df_result["Percent_Change"] = pd.to_numeric(df_result["Percent_Change"], errors='coerce')
-    
-    # Remove any NaN values
-    df_result = df_result.dropna(subset=["Percent_Change"])
-    
-    if not df_result.empty:
-        # Sort by percentage change (descending)
-        df_result = df_result.sort_values("Percent_Change", ascending=False)
-        
-        # Rename column for display
-        df_result = df_result.rename(columns={"Percent_Change": f"% Change ({timeframe})"})
-        
-        # Reset index for clean display
-        df_result = df_result.reset_index(drop=True)
-        
-        st.dataframe(df_result, use_container_width=True)
-        
-        # Show top performer
-        if len(df_result) > 0:
-            top_performer = df_result.iloc[0]
-            st.success(f"🏆 Top Performer: **{top_performer['Name']} ({top_performer['Ticker']})** with {top_performer[f'% Change ({timeframe})']}%")
-    else:
-        st.warning("No valid data available after filtering.")
+    except Exception as e:
+        st.error(f"Error processing results: {str(e)}")
+        st.write("Raw results for debugging:")
+        st.write(results)
 else:
     st.warning("No data available for the selected criteria.")
 
-# Show errors if any (in expander to not clutter the main view)
+# Show errors if any
 if errors:
     with st.expander("⚠️ Data Fetch Issues", expanded=False):
         for error in errors:
